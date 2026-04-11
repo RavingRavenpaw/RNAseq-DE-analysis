@@ -40,6 +40,9 @@ missing <- packages[!(packages %in% rownames(installed.packages()))]
 if (length(missing)) BiocManager::install(missing)
 lapply(packages, library, character.only = TRUE)
 
+
+source(file.path("setup_data_dir.R"))
+
 ```
 
 ## Data locations & assay config
@@ -64,6 +67,7 @@ metadata_numSamples <- 40 # Temp - using this to keep only 40 samples in metadat
 # because I can't find the counts matrix for the rest!!
 
 # QC setup
+input_add1_allCounts = FALSE # Add 1 to all counts to "fix" the "Every gene contains at least one zero" error. This is a shitty way to do this
 input_metadata_sort = "CM" # Column to sort metadata by. Set NULL to disable
 input_QC_heatmap_var = "CM" # Hierarchical heatmap grouping
 input_QC_PCA_intgroup = c("CM")
@@ -99,6 +103,7 @@ file_metadata <- here(data_folder,
 metadata_numSamples <- NULL # Only grab this many samples. Set NULL to disable.
 
 # QC setup
+input_add1_allCounts = TRUE # Add 1 to all counts to "fix" the "Every gene contains at least one zero" error. This is a shitty way to do this
 input_metadata_sort = NULL # Column to sort metadata by. Set NULL to disable
 input_QC_heatmap_var = c("session", "timepoint") # Hierarchical heatmap grouping
 input_QC_PCA_intgroup = c("session", "timepoint") # PCA grouping
@@ -143,12 +148,7 @@ metadata <- read_csv(file_metadata,
   column_to_rownames(var = "Sample_ID_1") %>%
   filter(!(rownames(.) %in% input_samples_drop))
 
-if(!is.null(input_metadata_sort)) {metadata <- metadata %>% arrange(!!sym(input_metadata_sort))}
-
-# Use the match() function to reorder the columns of the raw counts
-cols_to_sort <- rownames(metadata) %in% colnames(rawcounts)
-reorder_idx <- match(rownames(metadata), colnames(rawcounts))
-rawcounts <- rawcounts[ , reorder_idx]
+if(!is.null(input_metadata_sort)) {metadata <- metadata %>% arrange(!!sym(input_metadata_sort))} # wtf does this do? sorting I think?
 
 ```
 
@@ -175,8 +175,14 @@ metadata <- read_csv(file_metadata,
                      )) %>%
   mutate(age = as.vector(scale(age))) %>%
   column_to_rownames(var = "sampleID") %>%
-  filter(!!input_metadata_samples_filter)
+  filter(!!input_metadata_samples_filter) # Drop pre-specified samples
   
+
+
+```
+
+### Clean data
+```{r import_data_clean_data}
 
 # Use the match() function to reorder the columns of the raw counts
 # Find only rows from metadata that mexist in cols of rawcounts
@@ -184,17 +190,23 @@ desired_order <- rownames(metadata)
 rawcounts <- rawcounts[, desired_order[desired_order %in% colnames(rawcounts)], drop = FALSE]
 # Drop samples from metadata that don't appear in the rawcounts so DESeq2 doesn't get upset
 metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE]
+
 ```
+
 
 ## DESeq2 dataset prep
 
 ```{r DE_dataset_prep}
 
-# QC - Remove genes with no reads
+# QC - Remove genes with no reads!!
+# Note - we should probably make a list of genes we removed?
 rawcounts <- rawcounts[rowSums(rawcounts) >= 0, ]
+
+# If specified -
 # Add 1 read to every gene/sample
 # Only way I can get stress study data to work :(
-rawcounts <- rawcounts + 1
+if (input_add1_allCounts == TRUE) {rawcounts <- rawcounts + 1}
+
 
 dds <- DESeqDataSetFromMatrix(
   countData = rawcounts,
