@@ -6,3 +6,7 @@ config/local_paths.R
 .RData
 
 .Rhistory
+
+DE-analysis_files/figure-html/
+
+DE-analysis.html

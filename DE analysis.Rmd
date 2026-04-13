@@ -33,14 +33,15 @@ if (!requireNamespace("BiocManager", quietly = TRUE))
 # Required bioconductor packages
 packages <- c("DESeq2")
 
-# Identify missing packages,
-# install all missing packages at once
-# Load all missing packages
+# Identify and install any missing bioconductor packages
+# Load all required bioconductor packages
 missing <- packages[!(packages %in% rownames(installed.packages()))]
 if (length(missing)) BiocManager::install(missing)
 lapply(packages, library, character.only = TRUE)
 
-
+# Run data directory setup helper file
+# Stores user's inputted data location in the data_dir variable
+# Note: data_dir (really more like project directory) and data_folder (actually folder of data) are going to cause some confusion. Make this better at some point
 source(file.path("setup_data_dir.R"))
 
 ```
@@ -56,7 +57,7 @@ source(file.path("setup_data_dir.R"))
 
 # TO-DO: Modify import code so I can specify sample ID and gene ID column names here
 
-data_folder <- here("Data", "CHS")
+data_folder <- here(data_dir, "Data", "CHS")
 
 
 # Data locations
@@ -94,7 +95,7 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 # TO-DO: Modify import code so I can specify sample ID and gene ID column names here
 
 # Data locations
-data_folder <- here("Data", "Stress study")
+data_folder <- here(data_dir, "Data", "Stress study")
 file_countsMatrix <- here(data_folder,
                           "Counts_Combined_MM_20bp_Final.tsv")
 countsMatrx_skipLast <- 0 # Skip the last number of lines containing QC info
@@ -113,7 +114,7 @@ input_rawcounts_samples_drop = c(NULL) # Vector of sample numbers in rawcounts t
 input_metadata_samples_filter = expr(group == 2) # Filter metadata samples to this. Set NULL to disable.
 
 # DE Setup
-input_DE_design = ~ sex + age + session + timepoint
+input_DE_design = ~ sex + age + session + timepoint + session:timepoint
 input_DE_contrast = c("session", "control", "stress")
 input_DE_alpha = 0.05
 input_DE_lfcThreshold = 0 # Datacamp used 0.32
@@ -163,7 +164,30 @@ rawcounts <- read_tsv(file_countsMatrix,
   column_to_rownames(var = "Geneid") %>%
   select(-all_of(input_rawcounts_samples_drop))
 
-# import sample metadata
+
+# To-do:
+# Instead of using the abridged datafile (manually created in excel),
+# import and merge the two separate datafiles. Steps to do this
+  # Import the ORIGINAL separate datafiles for participants 1 - 13 and 14 - 35
+  # Transpose the datafile for participatns 1 - 13 (it's flipped the wrong way)
+  # Duplicate IDs - 1x for control session, 1x for stress session
+    # This may heave to be done differently for both datafiles
+  # Quadruplicate IDs - 1x for each timepoint (4x total)
+    # This effectively turns the PARTICIPANT level roster into a SAMPLE level roster
+  # Merge both datafiles together by merging columns of the same name
+  # Flag columns with no matching name to merge later, or
+  # Just discard the un-matching columns for now
+  # Ensure proper datatypes and calculate whatever else I need to
+
+# This will yield us SAMPLE-level list that contains, per 1x participant
+  # 8x total samples (split into 2x sessions)
+    # 4x control session samples (split into 4x timepoints)
+    # 4x stress session samples (split into 4x timepoints)
+
+
+
+# import abridged metadata
+# fix this by later by importing and merging both full participant datafiles
 metadata <- read_csv(file_metadata,
                      col_types = cols(
                        .default = col_factor(),
@@ -182,6 +206,7 @@ metadata <- read_csv(file_metadata,
 ```
 
 ### Clean data
+
 ```{r import_data_clean_data}
 
 # Use the match() function to reorder the columns of the raw counts
@@ -192,7 +217,6 @@ rawcounts <- rawcounts[, desired_order[desired_order %in% colnames(rawcounts)], 
 metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE]
 
 ```
-
 
 ## DESeq2 dataset prep
 
@@ -317,7 +341,7 @@ dds <- DESeq(dds)
 plotDispEsts(dds)
 ```
 
-Samples should generally follow and cluster around the fitted line. Dispersions should generally decease with increaseing mean.
+Samples should generally follow and cluster around the fitted line. Dispersions should generally decease with increasing mean.
 
 # Results
 
