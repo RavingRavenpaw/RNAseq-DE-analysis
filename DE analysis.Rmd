@@ -48,7 +48,7 @@ source(file.path("setup_data_dir.R"))
 
 ## Data locations & assay config
 
-```{r configuration_CHS, eval=FALSE, class.source="fold-hide", include=FALSE}
+```{r configuration_CHS, eval=TRUE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -57,13 +57,15 @@ source(file.path("setup_data_dir.R"))
 
 # TO-DO: Modify import code so I can specify sample ID and gene ID column names here
 
+# data_folder is the subfolder of "data_dir" (project folder), which contains the 
+# actual data for analysis
 data_folder <- here(data_dir, "Data", "CHS")
 
 
 # Data locations
-file_countsMatrix <- "CHS_G632_rawcounts.csv"
+file_countsMatrix <- here(data_folder, "CHS_G632_rawcounts.csv")
 countsMatrx_skipLast <- 5 # Skip the last number of lines containing QC info
-file_metadata <- "CHS_G632_metadata.csv"
+file_metadata <- here(data_folder, "CHS_G632_metadata.csv")
 metadata_numSamples <- 40 # Temp - using this to keep only 40 samples in metadata file
 # because I can't find the counts matrix for the rest!!
 
@@ -72,6 +74,8 @@ input_add1_allCounts = FALSE # Add 1 to all counts to "fix" the "Every gene cont
 input_metadata_sort = "CM" # Column to sort metadata by. Set NULL to disable
 input_QC_heatmap_var = "CM" # Hierarchical heatmap grouping
 input_QC_PCA_intgroup = c("CM")
+input_QC_PCA_multiPC_intgroup = c("CM", "sex") # Multi-PC PCA plot grouping
+input_QC_PCA_3D_intgroup = expr(CM)
 input_samples_drop = c(4,11, 12, 14, 40) #13 is unknown CM, rest are outliers(?)
 input_samples_dropFilter = "CM = \"Unknown\""
 
@@ -85,7 +89,7 @@ input_DE_lfcThreshold = 0 # Datacamp used 0.32
 input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 ```
 
-```{r configuration_stressStudy, echo = FALSE}
+```{r configuration_stressStudy, eval = FALSE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -95,6 +99,8 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 # TO-DO: Modify import code so I can specify sample ID and gene ID column names here
 
 # Data locations
+# data_folder is the subfolder of "data_dir" (project folder), which contains the 
+# actual data for analysis
 data_folder <- here(data_dir, "Data", "Stress study")
 file_countsMatrix <- here(data_folder,
                           "Counts_Combined_MM_20bp_Final.tsv")
@@ -126,7 +132,7 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 
 ## Import data
 
-```{r import_data_CHS, eval=FALSE, include=FALSE}
+```{r import_data_CHS, eval=TRUE}
 # Import counts data
 rawcounts <- read_csv(file_countsMatrix,
          col_types =  cols(
@@ -153,7 +159,7 @@ if(!is.null(input_metadata_sort)) {metadata <- metadata %>% arrange(!!sym(input_
 
 ```
 
-```{r import_data_stress, echo = TRUE}
+```{r import_data_stress, eval = FALSE}
 # Import raw counts data
 rawcounts <- read_tsv(file_countsMatrix,
                       col_types = cols(
