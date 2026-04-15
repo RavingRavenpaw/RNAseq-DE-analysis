@@ -48,7 +48,7 @@ source(file.path("setup_data_dir.R"))
 
 ## Data locations & assay config
 
-```{r configuration_CHS, eval=TRUE}
+```{r configuration_CHS, eval=FALSE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -89,7 +89,7 @@ input_DE_lfcThreshold = 0 # Datacamp used 0.32
 input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 ```
 
-```{r configuration_stressStudy, eval = FALSE}
+```{r configuration_stressStudy, eval = TRUE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -113,14 +113,14 @@ metadata_numSamples <- NULL # Only grab this many samples. Set NULL to disable.
 input_add1_allCounts = TRUE # Add 1 to all counts to "fix" the "Every gene contains at least one zero" error. This is a shitty way to do this
 input_metadata_sort = NULL # Column to sort metadata by. Set NULL to disable
 input_QC_heatmap_var = c("session", "timepoint") # Hierarchical heatmap grouping
-input_QC_PCA_intgroup = c("session", "timepoint") # PCA grouping
+input_QC_PCA_intgroup = c("session") # PCA grouping
 input_QC_PCA_multiPC_intgroup = c("session", "timepoint") # Multi-PC PCA plot grouping
 input_QC_PCA_3D_intgroup = expr(session)
 input_rawcounts_samples_drop = c(NULL) # Vector of sample numbers in rawcounts to drop. Set NULL to disable.
 input_metadata_samples_filter = expr(group == 2) # Filter metadata samples to this. Set NULL to disable.
 
 # DE Setup
-input_DE_design = ~ sex + age + session + timepoint + session:timepoint
+input_DE_design = ~ participant + session * timepoint
 input_DE_contrast = c("session", "control", "stress")
 input_DE_alpha = 0.05
 input_DE_lfcThreshold = 0 # Datacamp used 0.32
@@ -132,7 +132,7 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 
 ## Import data
 
-```{r import_data_CHS, eval=TRUE}
+```{r import_data_CHS, eval=FALSE}
 # Import counts data
 rawcounts <- read_csv(file_countsMatrix,
          col_types =  cols(
@@ -159,7 +159,7 @@ if(!is.null(input_metadata_sort)) {metadata <- metadata %>% arrange(!!sym(input_
 
 ```
 
-```{r import_data_stress, eval = FALSE}
+```{r import_data_stress, eval = TRUE}
 # Import raw counts data
 rawcounts <- read_tsv(file_countsMatrix,
                       col_types = cols(
@@ -231,6 +231,9 @@ metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE
 # QC - Remove genes with no reads!!
 # Note - we should probably make a list of genes we removed?
 rawcounts <- rawcounts[rowSums(rawcounts) >= 0, ]
+
+#QC - Remove genes with low (less than 10) reads
+rawcounts <- rawcounts[rowSums(rawcounts) > 10, ]
 
 # If specified -
 # Add 1 read to every gene/sample
