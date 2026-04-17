@@ -48,7 +48,7 @@ source(file.path("setup_data_dir.R"))
 
 ## Data locations & assay config
 
-```{r configuration_CHS, eval=FALSE}
+```{r configuration_CHS, eval=TRUE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -65,22 +65,26 @@ data_folder <- here(data_dir, "Data", "CHS")
 # Data locations
 file_countsMatrix <- here(data_folder, "CHS_G632_rawcounts.csv")
 countsMatrx_skipLast <- 5 # Skip the last number of lines containing QC info
+
 file_metadata <- here(data_folder, "CHS_G632_metadata.csv")
 metadata_numSamples <- 40 # Temp - using this to keep only 40 samples in metadata file
 # because I can't find the counts matrix for the rest!!
 
+file_demographics <- here(data_folder, "chs_data_for_John.RData")
+
 # QC setup
 input_add1_allCounts = FALSE # Add 1 to all counts to "fix" the "Every gene contains at least one zero" error. This is a shitty way to do this
 input_metadata_sort = "CM" # Column to sort metadata by. Set NULL to disable
-input_QC_heatmap_var = "CM" # Hierarchical heatmap grouping
-input_QC_PCA_intgroup = c("CM")
+input_QC_heatmap_var = "cm_cat_comp" # Hierarchical heatmap grouping
+input_QC_PCA_intgroup = c("cm_cat_comp")
 input_QC_PCA_multiPC_intgroup = c("CM", "sex") # Multi-PC PCA plot grouping
 input_QC_PCA_3D_intgroup = expr(CM)
 input_samples_drop = c(4,11, 12, 14, 40) #13 is unknown CM, rest are outliers(?)
 input_samples_dropFilter = "CM = \"Unknown\""
 
 # DE Setup
-input_DE_design = ~ CM # Having trouble running Batch + CM. Running just CM for now.
+input_DE_design = ~ t1_age_g2 +	t1_gender_g2 +	t1_race_g2 +	t1_eth_g2 + t1_bmi + CM
+#cm_cat_comp is categorical, CM is binary. Using CM for now bc I don't know how to set up multiple comparison groups in DESeq2 yet!! Idk how to ANOVA this shit
 input_DE_contrast = c("CM", "Yes", "No")
 input_DE_alpha = 0.05
 input_DE_lfcThreshold = 0 # Datacamp used 0.32
@@ -89,7 +93,7 @@ input_DE_lfcThreshold = 0 # Datacamp used 0.32
 input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 ```
 
-```{r configuration_stressStudy, eval = TRUE}
+```{r configuration_stressStudy, eval = FALSE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -132,7 +136,7 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 
 ## Import data
 
-```{r import_data_CHS, eval=FALSE}
+```{r import_data_CHS, eval= TRUE}
 # Import counts data
 rawcounts <- read_csv(file_countsMatrix,
          col_types =  cols(
@@ -143,12 +147,16 @@ rawcounts <- read_csv(file_countsMatrix,
   column_to_rownames(var = "...1") %>%
   select(-all_of(input_samples_drop))
 
+# Load participant demographics
+load(file_demographics)
+
 # Import sample metadata
 metadata <- read_csv(file_metadata,
   col_types = cols(
     .default = col_guess(),
     "CM" = col_factor(),
-    "Batch" = col_factor()
+    "Batch" = col_factor(),
+    "g2id" = col_character()
   )) %>%
   head(-countsMatrx_skipLast) %>%
   head(metadata_numSamples) %>%
@@ -157,9 +165,13 @@ metadata <- read_csv(file_metadata,
 
 if(!is.null(input_metadata_sort)) {metadata <- metadata %>% arrange(!!sym(input_metadata_sort))} # wtf does this do? sorting I think?
 
+
+# Append demographics data to sample metadata
+metadata <- left_join(metadata, chs_data_demo, by = "g2id")
+
 ```
 
-```{r import_data_stress, eval = TRUE}
+```{r import_data_stress, eval = FALSE}
 # Import raw counts data
 rawcounts <- read_tsv(file_countsMatrix,
                       col_types = cols(
@@ -215,11 +227,22 @@ metadata <- read_csv(file_metadata,
 
 ```{r import_data_clean_data}
 
+# Drop samples that have NAs in columns specified by DESeq2 design formula
+# 1. Extract variables from the design
+design_cols <- all.vars(input_DE_design)
+# 2. Filter metadata to keep only rows where NONE of these columns are NA
+metadata <- metadata[complete.cases(metadata[, design_cols]), ]
+
+# Z-score standardize numeric variables
+metadata <- metadata %>%
+  mutate(across(all_of(design_cols) & where(is.numeric), scale))
+
 # Use the match() function to reorder the columns of the raw counts
-# Find only rows from metadata that mexist in cols of rawcounts
+# Find only rows from metadata that exist in cols of rawcounts
 desired_order <- rownames(metadata)
 rawcounts <- rawcounts[, desired_order[desired_order %in% colnames(rawcounts)], drop = FALSE]
 # Drop samples from metadata that don't appear in the rawcounts so DESeq2 doesn't get upset
+# And vice cersa - drop samples from rawcounts that don't appear in metadata (bc participant has been filtered out due to NAs)
 metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE]
 
 ```
@@ -246,6 +269,10 @@ dds <- DESeqDataSetFromMatrix(
   colData = metadata,
   design = input_DE_design
 )
+
+
+
+
 ```
 
 # QC
@@ -316,9 +343,9 @@ pc_scores <- as.data.frame(pca$x[, 1:3, drop = FALSE])
 pc_scores$sample <- rownames(pc_scores)
 
 # attach metadata you want to color/shape by (edit to match your colData columns)
-meta <- as.data.frame(colData(vsd_dds))
+pca_meta <- as.data.frame(colData(vsd_dds))
 
-pc_scores <- cbind(pc_scores, meta)
+pc_scores <- cbind(pc_scores, pca_meta)
 
 labels <- paste0("PC", 1:3, " (", round(percentVar[1:3]*100), "%)")
 
@@ -409,7 +436,7 @@ pheatmap(dds_normalized_counts[select, ], # No significantly DE genes, so choosi
          cluster_rows = TRUE, 
          cluster_cols = TRUE,
          show_rownames = FALSE,
-         annotation = select(metadata, session), 
+         annotation = select(metadata, input_QC_PCA_intgroup), 
          scale = "row",
          main = "QC: Gene-level expression level heatmap")
 
