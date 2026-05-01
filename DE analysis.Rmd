@@ -31,7 +31,7 @@ if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 
 # Required bioconductor packages
-packages <- c("DESeq2")
+packages <- c("DESeq2", "biomaRt")
 
 # Identify and install any missing bioconductor packages
 # Load all required bioconductor packages
@@ -43,6 +43,10 @@ lapply(packages, library, character.only = TRUE)
 # Stores user's inputted data location in the data_dir variable
 # Note: data_dir (really more like project directory) and data_folder (actually folder of data) are going to cause some confusion. Make this better at some point
 source(file.path("setup_data_dir.R"))
+
+
+# biomaRt setup
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
 
 ```
 
@@ -145,7 +149,7 @@ rawcounts <- read_csv(file_countsMatrix,
          )) %>%
   `colnames<-`(c("...1", 1:40)) %>%
   column_to_rownames(var = "...1") %>%
-  select(-all_of(input_samples_drop))
+  dplyr::select(-all_of(input_samples_drop))
 
 # Load participant demographics
 load(file_demographics)
@@ -252,11 +256,14 @@ metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE
 ```{r DE_dataset_prep}
 
 # QC - Remove genes with no reads!!
-# Note - we should probably make a list of genes we removed?
-rawcounts <- rawcounts[rowSums(rawcounts) >= 0, ]
 
-#QC - Remove genes with low (less than 10) reads
-rawcounts <- rawcounts[rowSums(rawcounts) > 10, ]
+# Flag genes with 0 reads, low reads (1 - 10), then filter out from rawcounts
+genes_ZeroReads <- rownames(rawcounts[rowSums(rawcounts) == 0, ])
+genes_LowReads <- rownames(rawcounts[rowSums(rawcounts) < 10, ])
+genes_ToRemove <- c(genes_ZeroReads, genes_LowReads)
+
+rawcountsFiltered <- rawcounts[!(row.names(rawcounts) %in% genes_ToRemove), ]
+
 
 # If specified -
 # Add 1 read to every gene/sample
@@ -265,14 +272,10 @@ if (input_add1_allCounts == TRUE) {rawcounts <- rawcounts + 1}
 
 
 dds <- DESeqDataSetFromMatrix(
-  countData = rawcounts,
+  countData = rawcountsFiltered,
   colData = metadata,
   design = input_DE_design
 )
-
-
-
-
 ```
 
 # QC
@@ -401,7 +404,7 @@ summary(dds_results)
 dds_results_all <- data.frame(dds_results) %>%
   mutate(threshold = padj < input_DE_alpha)
 
-dds_results_sig <- subset(dds_results_all, threshold == TRUE)
+dds_results_sig <- subset(dds_results_all, threshold == TRUE) %>% arrange(padj)
 
 ```
 
@@ -441,3 +444,14 @@ pheatmap(dds_normalized_counts[select, ], # No significantly DE genes, so choosi
          main = "QC: Gene-level expression level heatmap")
 
 ```
+# Ensembl gene info
+```{r ensembl}
+# Get data on differentially expressed genes from ensembl using biomaRt
+geneInfo <- getBM(
+  attributes = c('ensembl_gene_id', 'external_gene_name', 'description', 'chromosome_name'),
+  filters = 'ensembl_gene_id',
+  values = head(rownames(dds_results_sig)),
+  mart = ensembl
+)
+```
+
