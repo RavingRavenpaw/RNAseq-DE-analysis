@@ -95,6 +95,21 @@ input_DE_lfcThreshold = 0 # Datacamp used 0.32
 
 # Graph setup
 input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
+
+# Gene attributes to pull from ensembl
+input_gene_attributes <- c(
+  "ensembl_gene_id",
+  "ensembl_gene_id_version",
+  "hgnc_symbol",
+  "external_gene_name",
+  "entrezgene_id",
+  "gene_biotype",
+  "description",
+  "chromosome_name",
+  "start_position",
+  "end_position",
+  "strand"
+)
 ```
 
 ```{r configuration_stressStudy, eval = FALSE}
@@ -293,7 +308,7 @@ vsd_dds <-vst(dds, blind = TRUE)
 vsd_matrix_dds <- assay(vsd_dds)
 # Compute correlations between samples
 vsd_cor_dds <- cor(vsd_matrix_dds)
-pheatmap(vsd_cor_dds, annotation = select(metadata, input_QC_heatmap_var),
+pheatmap(vsd_cor_dds, annotation = dplyr::select(metadata, input_QC_heatmap_var),
          cluster_cols = TRUE,
          cluster_rows = TRUE,
          show_rownames = FALSE,
@@ -439,19 +454,50 @@ pheatmap(dds_normalized_counts[select, ], # No significantly DE genes, so choosi
          cluster_rows = TRUE, 
          cluster_cols = TRUE,
          show_rownames = FALSE,
-         annotation = select(metadata, input_QC_PCA_intgroup), 
+         annotation =dplyr:: select(metadata, input_QC_PCA_intgroup), 
          scale = "row",
          main = "QC: Gene-level expression level heatmap")
 
 ```
+
 # Ensembl gene info
+
 ```{r ensembl}
 # Get data on differentially expressed genes from ensembl using biomaRt
 geneInfo <- getBM(
-  attributes = c('ensembl_gene_id', 'external_gene_name', 'description', 'chromosome_name'),
+  attributes =input_gene_attributes,
   filters = 'ensembl_gene_id',
   values = head(rownames(dds_results_sig)),
   mart = ensembl
 )
 ```
 
+```{r ensembl_chatGPT}
+
+# Should we keep ensembl IDs as the rownames here?
+# Or just let them be removed (converted to column) with
+# rownames_to_column()?
+dds_results_all_annotated <- dds_results_all %>% 
+  mutate(
+    ensembl_gene_id = sub("\\..*$", "", rownames(dds_results_all))
+  )
+
+ensembl <- useEnsembl(
+  biomart = "genes",
+  dataset = "hsapiens_gene_ensembl",
+  mirror = "useast"
+)
+
+
+geneInfo <- getBM(
+  attributes = input_gene_attributes,
+  filters = "ensembl_gene_id",
+  values = unique(res_tbl$ensembl_gene_id),
+  mart = ensembl
+) %>%
+  mutate(entrezgene_id = as.character(entrezgene_id)) %>%
+  distinct(ensembl_gene_id, .keep_all = TRUE)
+
+dds_results_all_annotated <- dds_results_all_annotated %>%
+  left_join(geneInfo, by = "ensembl_gene_id")
+```

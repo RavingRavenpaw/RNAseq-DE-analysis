@@ -1,12 +1,12 @@
 # This is all from CHatGPT and hasn't been checked yet - fair warning!
+library(rstudioapi)
 
-config_file <- file.path("config", "local_paths.R")
+config_file <- file.path("config", "local_paths.txt")
 
-if (!file.exists(config_file)) {
+# If config file missing or empty, prompt user for external data location
+# and store in config file
+if (!file.exists(config_file) | file.size(config_file) == 0) {
   dir.create("config", showWarnings = FALSE, recursive = TRUE)
-  
-  # Create the file first
-  file.create(config_file)
   
   message("No local data-path config was found.")
   message("Please select or enter the folder where this machine's analysis data lives.")
@@ -30,12 +30,15 @@ if (!file.exists(config_file)) {
   
   data_dir <- normalizePath(data_dir, winslash = "/", mustWork = FALSE)
   
+  # Create the file only after path selected
+  file.create(config_file)
+  
   writeLines(
     sprintf('data_dir <- "%s"', data_dir),
     con = config_file
   )
   
-  message("Created config/local_paths.R and saved data_dir.")
+  message("Created config/local_paths.txt and saved data_dir.")
 }
 
 source(config_file)
