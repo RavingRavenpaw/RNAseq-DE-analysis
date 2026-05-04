@@ -13,6 +13,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 
 #Required normal R packages
+library(rstudioapi)
 library(tidyr)
 library(ggplot2)
 library(dplyr)
@@ -25,13 +26,16 @@ library(matrixStats)
 library(here)
 library(plotly)
 library(rlang)
+library(AnnotationDbi)
+library(enrichplot)
 
 # Install bioconductor if missing
-if (!requireNamespace("BiocManager", quietly = TRUE))
+if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
+BiocManager::install(version = "3.23")
 
 # Required bioconductor packages
-packages <- c("DESeq2", "biomaRt")
+packages <- c("DESeq2", "biomaRt", "org.Hs.eg.db", "clusterProfiler", "ggupset", "msigdbr")
 
 # Identify and install any missing bioconductor packages
 # Load all required bioconductor packages
@@ -460,19 +464,15 @@ pheatmap(dds_normalized_counts[select, ], # No significantly DE genes, so choosi
 
 ```
 
-# Ensembl gene info
+# Gene annotation
 
-```{r ensembl}
-# Get data on differentially expressed genes from ensembl using biomaRt
-geneInfo <- getBM(
-  attributes =input_gene_attributes,
-  filters = 'ensembl_gene_id',
-  values = head(rownames(dds_results_sig)),
-  mart = ensembl
-)
-```
-
-```{r ensembl_chatGPT}
+```{r ensembl_annotation, eval = FALSE}
+  
+# Note: Ensembl is kind of fucked rtight now
+# because they're updating the website.
+# It's been like this for 3 months, apparently. So I'm not going to
+# fuck with ensembl. I'm converting the ensembl IDs to entrez IDs
+# annd going from there.
 
 # Should we keep ensembl IDs as the rownames here?
 # Or just let them be removed (converted to column) with
@@ -500,4 +500,194 @@ geneInfo <- getBM(
 
 dds_results_all_annotated <- dds_results_all_annotated %>%
   left_join(geneInfo, by = "ensembl_gene_id")
+```
+
+```{r annotation}
+
+# Using the ensembl ID, map the following info per gene:
+# gene symbol, entrez ID, gene name
+
+# Convert results into regular table
+dds_results_all_table <- as.data.frame(dds_results_all) %>%
+  rownames_to_column("ensembl_gene_id_raw") %>%
+  mutate(
+    ensembl_gene_id = sub("\\..*$", "", ensembl_gene_id_raw)
+  )
+
+# Locally match Ensembl IDs to symbols, Entrez IDs, and names
+genes_annotated <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = unique(res_tbl$ensembl_gene_id),
+  keytype = "ENSEMBL",
+  columns = c("ENSEMBL", "SYMBOL", "ENTREZID", "GENENAME")
+) %>%
+  as_tibble() %>%
+  distinct()
+
+# Merge annotation info into results table
+dds_results_all_table_annotated <- dds_results_all_table %>%
+  left_join(genes_annotated, by = c("ensembl_gene_id" = "ENSEMBL"), keep = TRUE)
+```
+
+# Over-representation analysis
+
+```{r analysis_ORA}
+
+# Significantly DE genes
+sig_genes_ensembl <- dds_results_all_table_annotated %>%
+  filter(!is.na(padj), padj < 0.05, !is.na(ENSEMBL)) %>%
+  pull(ENSEMBL) %>%
+  unique()
+
+# All genes
+background_genes_ensembl <- dds_results_all_table_annotated %>%
+  filter(!is.na(ENSEMBL)) %>%
+  pull(ENSEMBL) %>%
+  unique()
+
+# ORA for all 3 ontology options:
+# biological processes, molecular functions, and cellular components
+ego_ora_bp <- enrichGO(
+  gene = sig_genes_ensembl,
+  universe = background_genes_ensembl,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENSEMBL",
+  ont = "ALL"
+)
+
+# Separate analyses for individual components
+# Leaving these in here but commented out for now
+# It might be helpful later to run these separately when we 
+# have more data
+
+# ORA for biological processes
+# ego_ora_bp <- enrichGO(
+#   gene = sig_genes_ensembl,
+#   universe = background_genes_ensembl,
+#   OrgDb = org.Hs.eg.db,
+#   keyType = "ENSEMBL",
+#   ont = "BP"
+# )
+# 
+# # ORA for molecular functions
+# ego_ora_mf <- enrichGO(
+#   gene = sig_genes_ensembl,
+#   universe = background_genes_ensembl,
+#   OrgDb = org.Hs.eg.db,
+#   keyType = "ENSEMBL",
+#   ont = "MF"
+# )
+# 
+# # ORA for cellular components
+# ego_ora_cc <- enrichGO(
+#   gene = sig_genes_ensembl,
+#   universe = background_genes_ensembl,
+#   OrgDb = org.Hs.eg.db,
+#   keyType = "ENSEMBL",
+#   ont = "CC"
+# )
+
+# Helper function used below
+ratio_to_num <- function(x) {
+  sapply(strsplit(x, "/"), function(z) as.numeric(z[1]) / as.numeric(z[2]))
+}
+
+# Convert result tables to dataframes
+# Note - write another function to do this 3x 
+# or just do ont = "ALL" and add a column indicating BP, MF, or CC
+# since there aren't many results rn
+
+# Get usable results dataframe from results object
+# Currently baked into a function so I can re-use it later
+# if I'm going to run the ontologies separately
+getDF_ego_ora <- function(ego_ora_results) {
+  ego_ora_df <- as.data.frame(ego_ora_results)
+
+  # Convert expression ratios to numbers - if no data, skip
+  if(nrow(ego_ora_results) > 0) {
+    ego_ora_df <- ego_ora_df %>%
+      mutate(
+        GeneRatio_num = ratio_to_num(GeneRatio),
+        BgRatio_num = ratio_to_num(BgRatio),
+        FoldEnrichment = GeneRatio_num / BgRatio_num
+      ) %>%
+      arrange(p.adjust)
+  }
+    
+  dfVarName = paste0(deparse(substitute(ego_ora_results)), "_df")
+  
+  assign(dfVarName,
+          ego_ora_df,
+         envir = .GlobalEnv)
+  
+  return(get(dfVarName))
+}
+
+# Extract results
+getDF_ego_ora(ego_ora_all)
+
+
+#ChatGPT QA checks
+length(sig_genes_ensembl)
+length(background_genes_ensembl)
+
+sum(duplicated(sig_genes_ensembl))
+sum(duplicated(background_genes_ensembl))
+
+length(intersect(sig_genes_ensembl, background_genes_ensembl))
+setdiff(sig_genes_ensembl, background_genes_ensembl) |> head()
+
+mapped_check <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = background_genes_ensembl,
+  keytype = "ENSEMBL",
+  columns = c("ENSEMBL", "ENTREZID", "SYMBOL")
+) %>%
+  as_tibble()
+
+mapping_rate <- mapped_check %>%
+  summarise(
+    input_genes = length(unique(background_genes_ensembl)),
+    mapped_ensembl = n_distinct(ENSEMBL[!is.na(ENTREZID)]),
+    mapping_fraction = mapped_ensembl / input_genes
+  )
+
+mapping_rate
+
+```
+
+## ORA results visualization
+
+### Dot plot
+
+```{r ora_vis_dotplot}
+# To-do: make the split by ontology clearer,
+# or just facet by ontology
+ego_ora_all_reordered <- ego_ora_all %>% arrange(desc(ONTOLOGY), desc(Count))
+dotplot(ego_ora_all_reordered, showCategory = 20, split = "ONTOLOGY")
+```
+
+### Bar plot
+
+```{r ora_vis_barplot}
+
+p_nofacet <- barplot(
+  ego_ora_all_reordered,
+  x = "Count",
+  showCategory = 15,
+  split = "ONTOLOGY"
+) +
+  aes(fill = ONTOLOGY) +
+  scale_fill_brewer(palette = "Set2")
+
+p_nofacet +
+  geom_text(aes(label = Count), nudge_x = 2) +
+  scale_y_discrete()
+
+```
+
+# Gene set enrichment analysis
+
+```{r analysis_GSEA}
+
 ```
