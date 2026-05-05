@@ -26,8 +26,6 @@ library(matrixStats)
 library(here)
 library(plotly)
 library(rlang)
-library(AnnotationDbi)
-library(enrichplot)
 
 # Install bioconductor if missing
 if (!require("BiocManager", quietly = TRUE))
@@ -35,7 +33,7 @@ if (!require("BiocManager", quietly = TRUE))
 BiocManager::install(version = "3.23")
 
 # Required bioconductor packages
-packages <- c("DESeq2", "biomaRt", "org.Hs.eg.db", "clusterProfiler", "ggupset", "msigdbr")
+packages <- c("DESeq2", "biomaRt", "org.Hs.eg.db", "AnnotationDbi", "clusterProfiler", "ggupset", "msigdbr", "enrichplot")
 
 # Identify and install any missing bioconductor packages
 # Load all required bioconductor packages
@@ -404,10 +402,7 @@ Samples should generally follow and cluster around the fitted line. Dispersions 
 # Results
 
 ```{r results}
-dds_results <- results(dds,
-                       contrast = input_DE_contrast,
-                       alpha = input_DE_alpha,
-                       lfcThreshold = input_DE_lfcThreshold)
+dds_results <- results(dds)
 
 dds_results <- lfcShrink(dds,
                          contrast = input_DE_contrast,
@@ -421,7 +416,8 @@ summary(dds_results)
 # Save all results as dataframe, flag significant results,
 # then filter to significant results
 dds_results_all <- data.frame(dds_results) %>%
-  mutate(threshold = padj < input_DE_alpha)
+  mutate(threshold = padj < input_DE_alpha) %>%
+  arrange(desc(log2FoldChange)) # sort by l2fc for later GSEA
 
 dds_results_sig <- subset(dds_results_all, threshold == TRUE) %>% arrange(padj)
 
@@ -507,17 +503,18 @@ dds_results_all_annotated <- dds_results_all_annotated %>%
 # Using the ensembl ID, map the following info per gene:
 # gene symbol, entrez ID, gene name
 
-# Convert results into regular table
+# Convert results into regular table, and sort by stat
 dds_results_all_table <- as.data.frame(dds_results_all) %>%
   rownames_to_column("ensembl_gene_id_raw") %>%
   mutate(
     ensembl_gene_id = sub("\\..*$", "", ensembl_gene_id_raw)
   )
+  
 
 # Locally match Ensembl IDs to symbols, Entrez IDs, and names
 genes_annotated <- AnnotationDbi::select(
   org.Hs.eg.db,
-  keys = unique(res_tbl$ensembl_gene_id),
+  keys = unique(dds_results_all_table$ensembl_gene_id),
   keytype = "ENSEMBL",
   columns = c("ENSEMBL", "SYMBOL", "ENTREZID", "GENENAME")
 ) %>%
@@ -547,7 +544,7 @@ background_genes_ensembl <- dds_results_all_table_annotated %>%
 
 # ORA for all 3 ontology options:
 # biological processes, molecular functions, and cellular components
-ego_ora_bp <- enrichGO(
+ego_ora_all <- enrichGO(
   gene = sig_genes_ensembl,
   universe = background_genes_ensembl,
   OrgDb = org.Hs.eg.db,
@@ -690,4 +687,27 @@ p_nofacet +
 
 ```{r analysis_GSEA}
 
+genes_ranked <- dds_results_all_table_annotated %>%
+  filter(
+    !is.na(log2FoldChange),
+    !is.na(ensembl_gene_id)
+  ) %>%
+  group_by(ensembl_gene_id) %>%
+  slice_max(order_by = abs(log2FoldChange), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(log2FoldChange)) %>%
+  select(ensembl_gene_id, log2FoldChange) %>%
+  column_to_rownames(var = "ensembl_gene_id")
+
+gsea_bp_shrunk <- gseGO(
+  geneList      = genes_ranked,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENSEMBL",
+  ont           = "ALL",
+  minGSSize     = 10,
+  maxGSSize     = 500,
+  pvalueCutoff  = 0.05,
+  pAdjustMethod = "BH",
+  verbose       = FALSE
+)
 ```
