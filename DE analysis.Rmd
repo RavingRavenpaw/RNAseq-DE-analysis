@@ -13,11 +13,14 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 
 #Required normal R packages
+library(rstudioapi)
 library(tidyr)
 library(ggplot2)
+library(ggfittext)
 library(dplyr)
 library(readr)
 library(tibble)
+library(stringr)
 library(pheatmap)
 library(ashr)
 library(RColorBrewer)
@@ -27,11 +30,12 @@ library(plotly)
 library(rlang)
 
 # Install bioconductor if missing
-if (!requireNamespace("BiocManager", quietly = TRUE))
+if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
+BiocManager::install(version = "3.23")
 
 # Required bioconductor packages
-packages <- c("DESeq2")
+packages <- c("DESeq2", "biomaRt", "org.Hs.eg.db", "AnnotationDbi", "clusterProfiler", "ggupset", "msigdbr", "enrichplot")
 
 # Identify and install any missing bioconductor packages
 # Load all required bioconductor packages
@@ -44,11 +48,15 @@ lapply(packages, library, character.only = TRUE)
 # Note: data_dir (really more like project directory) and data_folder (actually folder of data) are going to cause some confusion. Make this better at some point
 source(file.path("setup_data_dir.R"))
 
+
+# biomaRt setup
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
 ```
 
 ## Data locations & assay config
 
-```{r configuration_CHS, eval=FALSE, class.source="fold-hide", include=FALSE}
+```{r configuration_CHS, eval=TRUE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -57,26 +65,34 @@ source(file.path("setup_data_dir.R"))
 
 # TO-DO: Modify import code so I can specify sample ID and gene ID column names here
 
+# data_folder is the subfolder of "data_dir" (project folder), which contains the 
+# actual data for analysis
 data_folder <- here(data_dir, "Data", "CHS")
 
 
 # Data locations
-file_countsMatrix <- "CHS_G632_rawcounts.csv"
-countsMatrx_skipLast <- 5 # Skip the last number of lines containing QC info
-file_metadata <- "CHS_G632_metadata.csv"
+file_countsMatrix <- here(data_folder, "CHS_G632_rawcounts.csv")
+input_rawcounts_filterOut_term <- "^_" # Regx term that attempts to match in the counts matrix 1st column ("..1"). If matched, filters out that row. The current term "^_" filters out rows that begin with the underscore "_" character. This is used to remove rows that correspond to QC info from the core, but are not actual samples.
+
+file_metadata <- here(data_folder, "CHS_G632_metadata.csv")
 metadata_numSamples <- 40 # Temp - using this to keep only 40 samples in metadata file
 # because I can't find the counts matrix for the rest!!
+
+file_demographics <- here(data_folder, "chs_data_for_John.RData")
 
 # QC setup
 input_add1_allCounts = FALSE # Add 1 to all counts to "fix" the "Every gene contains at least one zero" error. This is a shitty way to do this
 input_metadata_sort = "CM" # Column to sort metadata by. Set NULL to disable
-input_QC_heatmap_var = "CM" # Hierarchical heatmap grouping
-input_QC_PCA_intgroup = c("CM")
+input_QC_heatmap_var = "cm_cat_comp" # Hierarchical heatmap grouping
+input_QC_PCA_intgroup = c("cm_cat_comp")
+input_QC_PCA_multiPC_intgroup = c("CM", "sex") # Multi-PC PCA plot grouping
+input_QC_PCA_3D_intgroup = expr(CM)
 input_samples_drop = c(4,11, 12, 14, 40) #13 is unknown CM, rest are outliers(?)
 input_samples_dropFilter = "CM = \"Unknown\""
 
 # DE Setup
-input_DE_design = ~ CM # Having trouble running Batch + CM. Running just CM for now.
+input_DE_design = ~ t1_age_g2 +	t1_gender_g2 +	t1_race_g2 +	t1_eth_g2 + t1_bmi + CM
+#cm_cat_comp is categorical, CM is binary. Using CM for now bc I don't know how to set up multiple comparison groups in DESeq2 yet!! Idk how to ANOVA this shit
 input_DE_contrast = c("CM", "Yes", "No")
 input_DE_alpha = 0.05
 input_DE_lfcThreshold = 0 # Datacamp used 0.32
@@ -85,7 +101,7 @@ input_DE_lfcThreshold = 0 # Datacamp used 0.32
 input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 ```
 
-```{r configuration_stressStudy, echo = FALSE}
+```{r configuration_stressStudy, eval = FALSE}
 # Hi there! Please specify the location/names of your raw count matrix
 # and metadata files. Then specify the parameters for QC and DE analysis.
 
@@ -95,6 +111,8 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 # TO-DO: Modify import code so I can specify sample ID and gene ID column names here
 
 # Data locations
+# data_folder is the subfolder of "data_dir" (project folder), which contains the 
+# actual data for analysis
 data_folder <- here(data_dir, "Data", "Stress study")
 file_countsMatrix <- here(data_folder,
                           "Counts_Combined_MM_20bp_Final.tsv")
@@ -107,14 +125,14 @@ metadata_numSamples <- NULL # Only grab this many samples. Set NULL to disable.
 input_add1_allCounts = TRUE # Add 1 to all counts to "fix" the "Every gene contains at least one zero" error. This is a shitty way to do this
 input_metadata_sort = NULL # Column to sort metadata by. Set NULL to disable
 input_QC_heatmap_var = c("session", "timepoint") # Hierarchical heatmap grouping
-input_QC_PCA_intgroup = c("session", "timepoint") # PCA grouping
+input_QC_PCA_intgroup = c("session") # PCA grouping
 input_QC_PCA_multiPC_intgroup = c("session", "timepoint") # Multi-PC PCA plot grouping
 input_QC_PCA_3D_intgroup = expr(session)
 input_rawcounts_samples_drop = c(NULL) # Vector of sample numbers in rawcounts to drop. Set NULL to disable.
 input_metadata_samples_filter = expr(group == 2) # Filter metadata samples to this. Set NULL to disable.
 
 # DE Setup
-input_DE_design = ~ sex + age + session + timepoint + session:timepoint
+input_DE_design = ~ participant + session * timepoint
 input_DE_contrast = c("session", "control", "stress")
 input_DE_alpha = 0.05
 input_DE_lfcThreshold = 0 # Datacamp used 0.32
@@ -126,23 +144,28 @@ input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
 
 ## Import data
 
-```{r import_data_CHS, eval=FALSE, include=FALSE}
+```{r import_data_CHS, eval= TRUE}
 # Import counts data
 rawcounts <- read_csv(file_countsMatrix,
          col_types =  cols(
            .default = col_integer(),
            `...1` = col_character()
          )) %>%
+  filter_out(grepl(input_rawcounts_filterOut_term, `...1`)) %>%
   `colnames<-`(c("...1", 1:40)) %>%
   column_to_rownames(var = "...1") %>%
-  select(-all_of(input_samples_drop))
+  dplyr::select(-all_of(input_samples_drop))
+
+# Load participant demographics
+load(file_demographics)
 
 # Import sample metadata
 metadata <- read_csv(file_metadata,
   col_types = cols(
     .default = col_guess(),
     "CM" = col_factor(),
-    "Batch" = col_factor()
+    "Batch" = col_factor(),
+    "g2id" = col_character()
   )) %>%
   head(-countsMatrx_skipLast) %>%
   head(metadata_numSamples) %>%
@@ -151,9 +174,13 @@ metadata <- read_csv(file_metadata,
 
 if(!is.null(input_metadata_sort)) {metadata <- metadata %>% arrange(!!sym(input_metadata_sort))} # wtf does this do? sorting I think?
 
+
+# Append demographics data to sample metadata
+metadata <- left_join(metadata, chs_data_demo, by = "g2id")
+
 ```
 
-```{r import_data_stress, echo = TRUE}
+```{r import_data_stress, eval = FALSE}
 # Import raw counts data
 rawcounts <- read_tsv(file_countsMatrix,
                       col_types = cols(
@@ -209,11 +236,22 @@ metadata <- read_csv(file_metadata,
 
 ```{r import_data_clean_data}
 
+# Drop samples that have NAs in columns specified by DESeq2 design formula
+# 1. Extract variables from the design
+design_cols <- all.vars(input_DE_design)
+# 2. Filter metadata to keep only rows where NONE of these columns are NA
+metadata <- metadata[complete.cases(metadata[, design_cols]), ]
+
+# Z-score standardize numeric variables
+metadata <- metadata %>%
+  mutate(across(all_of(design_cols) & where(is.numeric), scale))
+
 # Use the match() function to reorder the columns of the raw counts
-# Find only rows from metadata that mexist in cols of rawcounts
+# Find only rows from metadata that exist in cols of rawcounts
 desired_order <- rownames(metadata)
 rawcounts <- rawcounts[, desired_order[desired_order %in% colnames(rawcounts)], drop = FALSE]
 # Drop samples from metadata that don't appear in the rawcounts so DESeq2 doesn't get upset
+# And vice cersa - drop samples from rawcounts that don't appear in metadata (bc participant has been filtered out due to NAs)
 metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE]
 
 ```
@@ -223,8 +261,14 @@ metadata <- metadata[rownames(metadata) %in% colnames(rawcounts), , drop = FALSE
 ```{r DE_dataset_prep}
 
 # QC - Remove genes with no reads!!
-# Note - we should probably make a list of genes we removed?
-rawcounts <- rawcounts[rowSums(rawcounts) >= 0, ]
+
+# Flag genes with 0 reads, low reads (1 - 10), then filter out from rawcounts
+genes_ZeroReads <- rownames(rawcounts[rowSums(rawcounts) == 0, ])
+genes_LowReads <- rownames(rawcounts[rowSums(rawcounts) < 10, ])
+genes_ToRemove <- c(genes_ZeroReads, genes_LowReads)
+
+rawcountsFiltered <- rawcounts[!(row.names(rawcounts) %in% genes_ToRemove), ]
+
 
 # If specified -
 # Add 1 read to every gene/sample
@@ -233,7 +277,7 @@ if (input_add1_allCounts == TRUE) {rawcounts <- rawcounts + 1}
 
 
 dds <- DESeqDataSetFromMatrix(
-  countData = rawcounts,
+  countData = rawcountsFiltered,
   colData = metadata,
   design = input_DE_design
 )
@@ -254,7 +298,7 @@ vsd_dds <-vst(dds, blind = TRUE)
 vsd_matrix_dds <- assay(vsd_dds)
 # Compute correlations between samples
 vsd_cor_dds <- cor(vsd_matrix_dds)
-pheatmap(vsd_cor_dds, annotation = select(metadata, input_QC_heatmap_var),
+pheatmap(vsd_cor_dds, annotation = dplyr::select(metadata, input_QC_heatmap_var),
          cluster_cols = TRUE,
          cluster_rows = TRUE,
          show_rownames = FALSE,
@@ -307,9 +351,9 @@ pc_scores <- as.data.frame(pca$x[, 1:3, drop = FALSE])
 pc_scores$sample <- rownames(pc_scores)
 
 # attach metadata you want to color/shape by (edit to match your colData columns)
-meta <- as.data.frame(colData(vsd_dds))
+pca_meta <- as.data.frame(colData(vsd_dds))
 
-pc_scores <- cbind(pc_scores, meta)
+pc_scores <- cbind(pc_scores, pca_meta)
 
 labels <- paste0("PC", 1:3, " (", round(percentVar[1:3]*100), "%)")
 
@@ -346,26 +390,47 @@ Samples should generally follow and cluster around the fitted line. Dispersions 
 # Results
 
 ```{r results}
-dds_results <- results(dds,
-                       contrast = input_DE_contrast,
-                       alpha = input_DE_alpha,
-                       lfcThreshold = input_DE_lfcThreshold)
+dds_results_raw <- results(dds,
+                          contrast = input_DE_contrast,
+                          alpha = input_DE_alpha,
+                          lfcThreshold = input_DE_lfcThreshold)
 
-dds_results <- lfcShrink(dds,
+dds_results_shrunk <- lfcShrink(dds,
                          contrast = input_DE_contrast,
-                         res = dds_results,
+                         res = dds_results_raw,
                          type = "ashr")
 # Datacamp uses "normal" lfc shrink algorithm from Love et al, 2014.
 # "ashr" from Stephens, 2016 yields less biased results
 
-summary(dds_results)
+summary(dds_results_raw)
+summary(dds_results_shrunk)
 
-# Save all results as dataframe, flag significant results,
-# then filter to significant results
-dds_results_all <- data.frame(dds_results) %>%
-  mutate(threshold = padj < input_DE_alpha)
+# Save all results as dataframe, combine raw & shrunk results,
+# flag significant results, then filter to significant results
 
-dds_results_sig <- subset(dds_results_all, threshold == TRUE)
+# Save results as table
+dds_results_raw_table <- data.frame(dds_results_raw) %>%
+  rownames_to_column("ensembl_gene_id_raw") %>%
+  mutate(threshold = padj < input_DE_alpha) %>%
+  arrange(desc(log2FoldChange)) # sort by l2fc for later GSEA
+
+dds_results_shrunk_table <- data.frame(dds_results_shrunk) %>%
+  rownames_to_column("ensembl_gene_id_raw") %>%
+  mutate(.keep = "none",
+         ensembl_gene_id_raw,
+         log2FoldChange_shrunk = log2FoldChange,
+         lfcSE_shrunk = lfcSE
+         )
+
+# Merge raw and shrunk results
+# Add column for cleaned ensembl IDs
+dds_results_all_table <- left_join(dds_results_raw_table,
+                                   dds_results_shrunk_table,
+                                   by = "ensembl_gene_id_raw") %>%
+  mutate(ensembl_gene_id = sub("\\..*$", "", ensembl_gene_id_raw))
+  
+
+dds_results_sig <- subset(dds_results_all_table, threshold == TRUE) %>% arrange(padj)
 
 ```
 
@@ -375,15 +440,25 @@ dds_results_sig <- subset(dds_results_all, threshold == TRUE)
 
 ```{r QC_MA_plot}
 # Scatterplot of normalized counts (x) vs. log2 fold changes (y)
-plotMA(dds_results)
+plotMA(dds_results_raw)
+plotMA(dds_results_shrunk)
 ```
 
 ## Volcano plot
 
 ```{r QC_volcano_plot}
-ggplot(dds_results_all) + 
+ggplot(dds_results_all_table) + 
         geom_point(aes(x = log2FoldChange, y = -log10(padj), color = threshold)) + 
         xlab("log2 fold change") + 
+        ylab("-log10 adjusted p-value") + 
+        theme(legend.position = "right", 
+              plot.title = element_text(size = rel(1.5), hjust = 0.5), 
+              axis.title = element_text(size = rel(1.25)))
+
+
+ggplot(dds_results_all_table) + 
+        geom_point(aes(x = log2FoldChange_shrunk, y = -log10(padj), color = threshold)) + 
+        xlab("log2 fold change (shrunk)") + 
         ylab("-log10 adjusted p-value") + 
         theme(legend.position = "right", 
               plot.title = element_text(size = rel(1.5), hjust = 0.5), 
@@ -393,15 +468,323 @@ ggplot(dds_results_all) +
 ## Significant genes heatmap
 
 ```{r QC_heatmp_significant_genes}
-dds_normalized_counts_sig <- dds_normalized_counts[rownames(dds_results_sig), ]
+dds_normalized_counts_sig <- dds_normalized_counts[dds_results_sig$ensembl_gene_id_raw, ]
 
 pheatmap(dds_normalized_counts[select, ], # No significantly DE genes, so choosing top 500 variation for now. change back later
          color = input_heatmap_colors, 
          cluster_rows = TRUE, 
          cluster_cols = TRUE,
          show_rownames = FALSE,
-         annotation = select(metadata, session), 
+         annotation =dplyr:: select(metadata, input_QC_PCA_intgroup), 
          scale = "row",
          main = "QC: Gene-level expression level heatmap")
+
+```
+
+# Gene annotation
+
+```{r ensembl_annotation, eval = FALSE}
+  
+# Note: Ensembl is kind of fucked rtight now
+# because they're updating the website.
+# It's been like this for 3 months, apparently. So I'm not going to
+# fuck with ensembl. I'm converting the ensembl IDs to entrez IDs
+# annd going from there.
+
+# Should we keep ensembl IDs as the rownames here?
+# Or just let them be removed (converted to column) with
+# rownames_to_column()?
+dds_results_all_annotated <- dds_results_all %>% 
+  mutate(
+    ensembl_gene_id = sub("\\..*$", "", rownames(dds_results_all))
+  )
+
+ensembl <- useEnsembl(
+  biomart = "genes",
+  dataset = "hsapiens_gene_ensembl",
+  mirror = "useast"
+)
+
+
+geneInfo <- getBM(
+  attributes = input_gene_attributes,
+  filters = "ensembl_gene_id",
+  values = unique(res_tbl$ensembl_gene_id),
+  mart = ensembl
+) %>%
+  mutate(entrezgene_id = as.character(entrezgene_id)) %>%
+  distinct(ensembl_gene_id, .keep_all = TRUE)
+
+dds_results_all_annotated <- dds_results_all_annotated %>%
+  left_join(geneInfo, by = "ensembl_gene_id")
+```
+
+```{r annotation}
+
+# Using the ensembl ID, map the following info per gene:
+# gene symbol, entrez ID, gene name
+
+# Locally match Ensembl IDs to symbols, Entrez IDs, and names
+genes_annotated <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = unique(dds_results_all_table$ensembl_gene_id),
+  keytype = "ENSEMBL",
+  columns = c("ENSEMBL", "SYMBOL", "ENTREZID", "GENENAME")
+) %>%
+  as_tibble() %>%
+  distinct()
+
+# Merge annotation info into results table
+dds_results_all_table_annotated <- dds_results_all_table %>%
+  left_join(genes_annotated, by = c("ensembl_gene_id" = "ENSEMBL"), keep = TRUE)
+```
+
+# Over-representation analysis
+
+```{r analysis_ORA}
+
+# Significantly DE genes
+sig_genes_ensembl <- dds_results_all_table_annotated %>%
+  filter(!is.na(padj), padj < 0.05, !is.na(ENSEMBL)) %>%
+  pull(ENSEMBL) %>%
+  unique()
+
+# All genes
+background_genes_ensembl <- dds_results_all_table_annotated %>%
+  filter(!is.na(ENSEMBL)) %>%
+  pull(ENSEMBL) %>%
+  unique()
+
+# ORA for all 3 ontology options:
+# biological processes, molecular functions, and cellular components
+ego_ora_all <- enrichGO(
+  gene = sig_genes_ensembl,
+  universe = background_genes_ensembl,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENSEMBL",
+  ont = "ALL"
+)
+
+# Separate analyses for individual components
+# Leaving these in here but commented out for now
+# It might be helpful later to run these separately when we 
+# have more data
+
+# ORA for biological processes
+# ego_ora_bp <- enrichGO(
+#   gene = sig_genes_ensembl,
+#   universe = background_genes_ensembl,
+#   OrgDb = org.Hs.eg.db,
+#   keyType = "ENSEMBL",
+#   ont = "BP"
+# )
+# 
+# # ORA for molecular functions
+# ego_ora_mf <- enrichGO(
+#   gene = sig_genes_ensembl,
+#   universe = background_genes_ensembl,
+#   OrgDb = org.Hs.eg.db,
+#   keyType = "ENSEMBL",
+#   ont = "MF"
+# )
+# 
+# # ORA for cellular components
+# ego_ora_cc <- enrichGO(
+#   gene = sig_genes_ensembl,
+#   universe = background_genes_ensembl,
+#   OrgDb = org.Hs.eg.db,
+#   keyType = "ENSEMBL",
+#   ont = "CC"
+# )
+
+# Helper function used below
+ratio_to_num <- function(x) {
+  sapply(strsplit(x, "/"), function(z) as.numeric(z[1]) / as.numeric(z[2]))
+}
+
+# Convert result tables to dataframes
+# Note - write another function to do this 3x 
+# or just do ont = "ALL" and add a column indicating BP, MF, or CC
+# since there aren't many results rn
+
+# Get usable results dataframe from results object
+# Currently baked into a function so I can re-use it later
+# if I'm going to run the ontologies separately
+getDF_ego_ora <- function(ego_ora_results) {
+  ego_ora_df <- as.data.frame(ego_ora_results)
+
+  # Convert expression ratios to numbers - if no data, skip
+  if(nrow(ego_ora_results) > 0) {
+    ego_ora_df <- ego_ora_df %>%
+      mutate(
+        GeneRatio_num = ratio_to_num(GeneRatio),
+        BgRatio_num = ratio_to_num(BgRatio),
+        FoldEnrichment = GeneRatio_num / BgRatio_num
+      ) %>%
+      arrange(p.adjust)
+  }
+    
+  dfVarName = paste0(deparse(substitute(ego_ora_results)), "_df")
+  
+  assign(dfVarName,
+          ego_ora_df,
+         envir = .GlobalEnv)
+  
+  return(get(dfVarName))
+}
+
+# Extract results
+getDF_ego_ora(ego_ora_all)
+
+
+#ChatGPT QA checks
+length(sig_genes_ensembl)
+length(background_genes_ensembl)
+
+sum(duplicated(sig_genes_ensembl))
+sum(duplicated(background_genes_ensembl))
+
+length(intersect(sig_genes_ensembl, background_genes_ensembl))
+setdiff(sig_genes_ensembl, background_genes_ensembl) |> head()
+
+mapped_check <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = background_genes_ensembl,
+  keytype = "ENSEMBL",
+  columns = c("ENSEMBL", "ENTREZID", "SYMBOL")
+) %>%
+  as_tibble()
+
+mapping_rate <- mapped_check %>%
+  summarise(
+    input_genes = length(unique(background_genes_ensembl)),
+    mapped_ensembl = n_distinct(ENSEMBL[!is.na(ENTREZID)]),
+    mapping_fraction = mapped_ensembl / input_genes
+  )
+
+mapping_rate
+
+```
+
+## ORA results visualization
+
+### Dot plot
+
+```{r ora_vis_dotplot}
+# To-do: make the split by ontology clearer,
+# or just facet by ontology
+ego_ora_all_reordered <- ego_ora_all %>% arrange(desc(ONTOLOGY), desc(Count))
+dotplot(ego_ora_all_reordered, showCategory = 20, split = "ONTOLOGY")
+```
+
+### Bar plot
+
+```{r ora_vis_barplot}
+
+p_nofacet <- barplot(
+  ego_ora_all_reordered,
+  x = "Count",
+  showCategory = 15,
+  split = "ONTOLOGY"
+) +
+  aes(fill = ONTOLOGY) +
+  scale_fill_brewer(palette = "Set2")
+
+p_nofacet +
+  geom_text(aes(label = Count), nudge_x = 2) +
+  scale_y_discrete()
+
+```
+
+# Gene set enrichment analysis
+
+```{r analysis_GSEA}
+
+genes_ranked_table <- dds_results_all_table_annotated %>%
+  filter(
+    !is.na(log2FoldChange_shrunk),
+    !is.na(ensembl_gene_id)
+  ) %>%
+  group_by(ensembl_gene_id) %>%
+  slice_max(order_by = abs(log2FoldChange_shrunk), n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(desc(log2FoldChange_shrunk)) %>%
+  select(ensembl_gene_id, log2FoldChange_shrunk) %>%
+  column_to_rownames(var = "ensembl_gene_id")
+
+genes_ranked <- genes_ranked_table$log2FoldChange_shrunk
+names(genes_ranked) <- rownames(genes_ranked_table)
+
+# Note - this is garbage rn! Fix issues with NAs from genes not mapping first
+gsea_all <- gseGO(
+  geneList      = genes_ranked,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENSEMBL",
+  ont           = "ALL",
+  minGSSize     = 10,
+  maxGSSize     = 500,
+  pvalueCutoff  = 0.05,
+  pAdjustMethod = "BH",
+  verbose       = FALSE
+)
+
+
+clean_gsea_object <- function(gsea_obj) {
+  keep <- with(
+    gsea_obj@result,
+    !is.na(ID) &
+      ID != "NA" &
+      !grepl("^NA", ID) &
+      !is.na(pvalue) &
+      !is.na(p.adjust) &
+      !is.na(NES) &
+      is.finite(pvalue) &
+      is.finite(p.adjust) &
+      is.finite(NES)
+  )
+  
+  gsea_obj_clean <- gsea_obj
+  gsea_obj_clean@result <- gsea_obj@result[keep, , drop = FALSE]
+  gsea_obj_clean
+}
+
+gsea_all_clean <- clean_gsea_object(gsea_all)
+
+```
+
+## GSEA visualization
+### Dotplot
+
+```{r GSEA_dotplot}
+dotplot(gsea_all_clean, showCategory = 20, split = ".sign") +
+  facet_grid(. ~ .sign) +
+  ggtitle("GSEA - GO Biological Process")
+
+dotplot(gsea_all_clean, showCategory = 10, split = ".sign") +
+  facet_grid(. ~ .sign)
+
+# dotplot(ego_ora_all_reordered, showCategory = 20, split = "ONTOLOGY")
+```
+
+```{r GSEA_ridgeplot}
+ridgeplot(gsea_all_clean, showCategory = 20) +
+  labs(x = "Rank metric", title = "GSEA ridgeplot - GO BP")
+
+
+gseaplot2(
+  gsea_all_clean,
+  geneSetID = 1,
+  title = gsea_all_clean@result$Description[1]
+)
+
+cnetplot(
+  gsea_all_clean,
+  showCategory = 10,
+  foldChange = genes_ranked
+)
+
+gsea_all_sim <- pairwise_termsim(gsea_all_clean)
+
+emapplot(gsea_all_sim, showCategory = 10)
 
 ```
