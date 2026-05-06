@@ -16,9 +16,11 @@ knitr::opts_chunk$set(echo = TRUE)
 library(rstudioapi)
 library(tidyr)
 library(ggplot2)
+library(ggfittext)
 library(dplyr)
 library(readr)
 library(tibble)
+library(stringr)
 library(pheatmap)
 library(ashr)
 library(RColorBrewer)
@@ -70,7 +72,7 @@ data_folder <- here(data_dir, "Data", "CHS")
 
 # Data locations
 file_countsMatrix <- here(data_folder, "CHS_G632_rawcounts.csv")
-countsMatrx_skipLast <- 5 # Skip the last number of lines containing QC info
+input_rawcounts_filterOut_term <- "^_" # Regx term that attempts to match in the counts matrix 1st column ("..1"). If matched, filters out that row. The current term "^_" filters out rows that begin with the underscore "_" character. This is used to remove rows that correspond to QC info from the core, but are not actual samples.
 
 file_metadata <- here(data_folder, "CHS_G632_metadata.csv")
 metadata_numSamples <- 40 # Temp - using this to keep only 40 samples in metadata file
@@ -97,21 +99,6 @@ input_DE_lfcThreshold = 0 # Datacamp used 0.32
 
 # Graph setup
 input_heatmap_colors = brewer.pal(n = 6, name = "YlOrRd")
-
-# Gene attributes to pull from ensembl
-input_gene_attributes <- c(
-  "ensembl_gene_id",
-  "ensembl_gene_id_version",
-  "hgnc_symbol",
-  "external_gene_name",
-  "entrezgene_id",
-  "gene_biotype",
-  "description",
-  "chromosome_name",
-  "start_position",
-  "end_position",
-  "strand"
-)
 ```
 
 ```{r configuration_stressStudy, eval = FALSE}
@@ -164,6 +151,7 @@ rawcounts <- read_csv(file_countsMatrix,
            .default = col_integer(),
            `...1` = col_character()
          )) %>%
+  filter_out(grepl(input_rawcounts_filterOut_term, `...1`)) %>%
   `colnames<-`(c("...1", 1:40)) %>%
   column_to_rownames(var = "...1") %>%
   dplyr::select(-all_of(input_samples_drop))
@@ -402,24 +390,47 @@ Samples should generally follow and cluster around the fitted line. Dispersions 
 # Results
 
 ```{r results}
-dds_results <- results(dds)
+dds_results_raw <- results(dds,
+                          contrast = input_DE_contrast,
+                          alpha = input_DE_alpha,
+                          lfcThreshold = input_DE_lfcThreshold)
 
-dds_results <- lfcShrink(dds,
+dds_results_shrunk <- lfcShrink(dds,
                          contrast = input_DE_contrast,
-                         res = dds_results,
+                         res = dds_results_raw,
                          type = "ashr")
 # Datacamp uses "normal" lfc shrink algorithm from Love et al, 2014.
 # "ashr" from Stephens, 2016 yields less biased results
 
-summary(dds_results)
+summary(dds_results_raw)
+summary(dds_results_shrunk)
 
-# Save all results as dataframe, flag significant results,
-# then filter to significant results
-dds_results_all <- data.frame(dds_results) %>%
+# Save all results as dataframe, combine raw & shrunk results,
+# flag significant results, then filter to significant results
+
+# Save results as table
+dds_results_raw_table <- data.frame(dds_results_raw) %>%
+  rownames_to_column("ensembl_gene_id_raw") %>%
   mutate(threshold = padj < input_DE_alpha) %>%
   arrange(desc(log2FoldChange)) # sort by l2fc for later GSEA
 
-dds_results_sig <- subset(dds_results_all, threshold == TRUE) %>% arrange(padj)
+dds_results_shrunk_table <- data.frame(dds_results_shrunk) %>%
+  rownames_to_column("ensembl_gene_id_raw") %>%
+  mutate(.keep = "none",
+         ensembl_gene_id_raw,
+         log2FoldChange_shrunk = log2FoldChange,
+         lfcSE_shrunk = lfcSE
+         )
+
+# Merge raw and shrunk results
+# Add column for cleaned ensembl IDs
+dds_results_all_table <- left_join(dds_results_raw_table,
+                                   dds_results_shrunk_table,
+                                   by = "ensembl_gene_id_raw") %>%
+  mutate(ensembl_gene_id = sub("\\..*$", "", ensembl_gene_id_raw))
+  
+
+dds_results_sig <- subset(dds_results_all_table, threshold == TRUE) %>% arrange(padj)
 
 ```
 
@@ -429,15 +440,25 @@ dds_results_sig <- subset(dds_results_all, threshold == TRUE) %>% arrange(padj)
 
 ```{r QC_MA_plot}
 # Scatterplot of normalized counts (x) vs. log2 fold changes (y)
-plotMA(dds_results)
+plotMA(dds_results_raw)
+plotMA(dds_results_shrunk)
 ```
 
 ## Volcano plot
 
 ```{r QC_volcano_plot}
-ggplot(dds_results_all) + 
+ggplot(dds_results_all_table) + 
         geom_point(aes(x = log2FoldChange, y = -log10(padj), color = threshold)) + 
         xlab("log2 fold change") + 
+        ylab("-log10 adjusted p-value") + 
+        theme(legend.position = "right", 
+              plot.title = element_text(size = rel(1.5), hjust = 0.5), 
+              axis.title = element_text(size = rel(1.25)))
+
+
+ggplot(dds_results_all_table) + 
+        geom_point(aes(x = log2FoldChange_shrunk, y = -log10(padj), color = threshold)) + 
+        xlab("log2 fold change (shrunk)") + 
         ylab("-log10 adjusted p-value") + 
         theme(legend.position = "right", 
               plot.title = element_text(size = rel(1.5), hjust = 0.5), 
@@ -447,7 +468,7 @@ ggplot(dds_results_all) +
 ## Significant genes heatmap
 
 ```{r QC_heatmp_significant_genes}
-dds_normalized_counts_sig <- dds_normalized_counts[rownames(dds_results_sig), ]
+dds_normalized_counts_sig <- dds_normalized_counts[dds_results_sig$ensembl_gene_id_raw, ]
 
 pheatmap(dds_normalized_counts[select, ], # No significantly DE genes, so choosing top 500 variation for now. change back later
          color = input_heatmap_colors, 
@@ -502,14 +523,6 @@ dds_results_all_annotated <- dds_results_all_annotated %>%
 
 # Using the ensembl ID, map the following info per gene:
 # gene symbol, entrez ID, gene name
-
-# Convert results into regular table, and sort by stat
-dds_results_all_table <- as.data.frame(dds_results_all) %>%
-  rownames_to_column("ensembl_gene_id_raw") %>%
-  mutate(
-    ensembl_gene_id = sub("\\..*$", "", ensembl_gene_id_raw)
-  )
-  
 
 # Locally match Ensembl IDs to symbols, Entrez IDs, and names
 genes_annotated <- AnnotationDbi::select(
@@ -687,19 +700,23 @@ p_nofacet +
 
 ```{r analysis_GSEA}
 
-genes_ranked <- dds_results_all_table_annotated %>%
+genes_ranked_table <- dds_results_all_table_annotated %>%
   filter(
-    !is.na(log2FoldChange),
+    !is.na(log2FoldChange_shrunk),
     !is.na(ensembl_gene_id)
   ) %>%
   group_by(ensembl_gene_id) %>%
-  slice_max(order_by = abs(log2FoldChange), n = 1, with_ties = FALSE) %>%
+  slice_max(order_by = abs(log2FoldChange_shrunk), n = 1, with_ties = FALSE) %>%
   ungroup() %>%
-  arrange(desc(log2FoldChange)) %>%
-  select(ensembl_gene_id, log2FoldChange) %>%
+  arrange(desc(log2FoldChange_shrunk)) %>%
+  select(ensembl_gene_id, log2FoldChange_shrunk) %>%
   column_to_rownames(var = "ensembl_gene_id")
 
-gsea_bp_shrunk <- gseGO(
+genes_ranked <- genes_ranked_table$log2FoldChange_shrunk
+names(genes_ranked) <- rownames(genes_ranked_table)
+
+# Note - this is garbage rn! Fix issues with NAs from genes not mapping first
+gsea_all <- gseGO(
   geneList      = genes_ranked,
   OrgDb         = org.Hs.eg.db,
   keyType       = "ENSEMBL",
@@ -710,4 +727,64 @@ gsea_bp_shrunk <- gseGO(
   pAdjustMethod = "BH",
   verbose       = FALSE
 )
+
+
+clean_gsea_object <- function(gsea_obj) {
+  keep <- with(
+    gsea_obj@result,
+    !is.na(ID) &
+      ID != "NA" &
+      !grepl("^NA", ID) &
+      !is.na(pvalue) &
+      !is.na(p.adjust) &
+      !is.na(NES) &
+      is.finite(pvalue) &
+      is.finite(p.adjust) &
+      is.finite(NES)
+  )
+  
+  gsea_obj_clean <- gsea_obj
+  gsea_obj_clean@result <- gsea_obj@result[keep, , drop = FALSE]
+  gsea_obj_clean
+}
+
+gsea_all_clean <- clean_gsea_object(gsea_all)
+
+```
+
+## GSEA visualization
+### Dotplot
+
+```{r GSEA_dotplot}
+dotplot(gsea_all_clean, showCategory = 20, split = ".sign") +
+  facet_grid(. ~ .sign) +
+  ggtitle("GSEA - GO Biological Process")
+
+dotplot(gsea_all_clean, showCategory = 10, split = ".sign") +
+  facet_grid(. ~ .sign)
+
+# dotplot(ego_ora_all_reordered, showCategory = 20, split = "ONTOLOGY")
+```
+
+```{r GSEA_ridgeplot}
+ridgeplot(gsea_all_clean, showCategory = 20) +
+  labs(x = "Rank metric", title = "GSEA ridgeplot - GO BP")
+
+
+gseaplot2(
+  gsea_all_clean,
+  geneSetID = 1,
+  title = gsea_all_clean@result$Description[1]
+)
+
+cnetplot(
+  gsea_all_clean,
+  showCategory = 10,
+  foldChange = genes_ranked
+)
+
+gsea_all_sim <- pairwise_termsim(gsea_all_clean)
+
+emapplot(gsea_all_sim, showCategory = 10)
+
 ```
